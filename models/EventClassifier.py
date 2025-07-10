@@ -23,7 +23,6 @@ class EventClassifier(nn.Module):
     def forward(self, event_features, object_features):
         event_representation = self.event_net(event_features)
         object_representation = self.object_net(object_features)
-        
         combined_representation = torch.cat((event_representation, object_representation), dim=-1)
         output = self.classifier(combined_representation)
 
