@@ -1,8 +1,6 @@
 import uproot
 import h5py
 import numpy as np
-from sklearn.model_selection import train_test_split
-import pandas as pd
 import yaml
 
 # Define the features to extract from the event and objects
@@ -46,7 +44,8 @@ def load_root_file(file_path, filename, label ):
     object_feature_array = np.array([[tree[feature].array(library="np") for feature in features] for features in object_features_to_extract]).T
     # create label for the event 
     labels = np.full((event_feature_array.shape[0],), label, dtype=np.int8)
-    return event_feature_array, object_feature_array, labels
+    event_numbers = tree["eventNumber"].array(library="np")
+    return event_feature_array, object_feature_array, labels, event_numbers
 # should also add file_path and filename in the config file later
 # for now we will keep it simple
 # call the function to see if it works 
@@ -59,12 +58,14 @@ files = [
 all_event_features = np.empty((0, len(event_features_to_extract)))
 all_object_features = np.empty((0, 2, len(object_features_to_extract)))  # 2 for each object feature pair
 all_labels = np.empty((0,), dtype=np.int8)
+all_eventNumbers = np.empty((0,), dtype=np.int64)
 for file in files:
-    event_feature_array, object_feature_array, labels =load_root_file(filepath, file["filename"], file["label"])
+    event_feature_array, object_feature_array, labels, event_numbers =load_root_file(filepath, file["filename"], file["label"])
     # get all features 
     all_event_features = np.vstack((all_event_features, event_feature_array))
     all_object_features = np.vstack((all_object_features, object_feature_array))
     all_labels = np.hstack((all_labels, labels))
+    all_eventNumbers=np.hstack((all_eventNumbers, event_numbers))
 
 # let's shuffle the arrays befiore saving them 
 # get total number of events
@@ -74,18 +75,27 @@ N_total = all_labels.shape[0]
 indices = np.arange(N_total)
 np.random.shuffle(indices)
 
-# apply shuffle to all arrays, this is for sanity check, can also skip and just use the shuggle from the train_test_split
+# apply shuffle to all arrays, this is for sanity check, can also skip and just use the shuggle from the 
 all_event_features = all_event_features[indices]
 all_object_features = all_object_features[indices]
 all_labels = all_labels[indices]
 
-## to be stores in config file later
-train_val_test_split = [0.8,0.1,0.1]  # 80% train, 10% validation, 10% test
-random_state = 42  # for reproducibility , we will also keep this in config file later
+#let's do split based on eventNumbers
+train_mask = (all_eventNumbers % 10 < 8)
+val_mask = (all_eventNumbers % 10 == 8)
+test_mask = (all_eventNumbers % 10 == 9)
 
-# split the data into train, validation and test sets
-X_train_event_feature, X_temp_event_feature, X_train_object_feature, X_temp_object_feature, y_train, y_temp = train_test_split(all_event_features, all_object_features, all_labels, random_state=random_state, test_size=1-train_val_test_split[0], stratify=all_labels, shuffle=True)
-X_val_event_feature, X_test_event_feature, X_val_object_feature, X_test_object_feature, y_val, y_test = train_test_split(X_temp_event_feature, X_temp_object_feature, y_temp, random_state=random_state, test_size=train_val_test_split[2]/(train_val_test_split[1]+train_val_test_split[2]), stratify=y_temp, shuffle=True)
+X_train_event_feature = all_event_features[train_mask]
+X_train_object_feature = all_object_features[train_mask]
+y_train = all_labels[train_mask]
+
+X_val_event_feature = all_event_features[val_mask]
+X_val_object_feature = all_object_features[val_mask]
+y_val = all_labels[val_mask]
+
+X_test_event_feature = all_event_features[test_mask]
+X_test_object_feature = all_object_features[test_mask]
+y_test = all_labels[test_mask]
 
 ## -- now let's save the data to h5 files -- ##
 def save_to_h5( X_event, X_object, y, filename):
@@ -98,18 +108,24 @@ def save_to_h5( X_event, X_object, y, filename):
     structured_events['label'] = y
     
     # now let's do the same for object features
-    object_columns = ["VBFjetPt", "VBFjetEta", "GN2v01BinBJet", "GN2v01BinVBfJet", "GN2v01cBinBJet", "GN2v01cBinVBfJet", "NTrk500PVVBFJet", "QGTransformer_ConstScoreVBFJet" ]
+    object_columns = ["VBFjetPt", "VBFjetEta", "GN2v01BinBJet", "GN2v01BinVBfJet", "GN2v01cBinBJet", "GN2v01cBinVBfJet", "NTrk500PVVBFJet", "QGTransformer_ConstScoreVBFJet", "valid" ]
     # let's add some additional placeholders for additional objects in an event 
     N_events, N_objects, N_features = X_object.shape
     N_max_objects = 5  # assuming we have at most 2 objects per event
     X_object_padded = np.full((N_events, N_max_objects, N_features), 0.0, dtype=np.float32)  # fill with NaN for missing objects
     X_object_padded[:, :N_objects, :] = X_object
     # let me create a structured array for object features
-    object_dtype = [(col, np.float32) for col in object_columns]
+    object_dtype = [(col, np.float32) for col in object_columns [:-1]] #everything 
+    object_dtype += [("valid", np.bool_)]
     structured_objects = np.zeros((N_events,N_max_objects), dtype=object_dtype)
-    print("structured_objects shape:", structured_objects.shape)
-    for idx, col in enumerate(object_columns):
+    for idx, col in enumerate(object_columns [:-1]):
         structured_objects[col] = X_object_padded[:,:, idx] 
+
+    # add valid flag for object features 
+    valid_flags = np.zeros(( N_events, N_max_objects), dtype=np.bool_)
+    valid_flags [:, : N_objects] = True
+
+    structured_objects['valid'] = valid_flags
 
     # ****** ------ only save normalization parameters for training set ------ ****** #
     if ("train" in filename):
@@ -122,7 +138,7 @@ def save_to_h5( X_event, X_object, y, filename):
             event_norm_params[name] = {'mean': float(mean), 'std': float(std)}
     
         object_norm_params = {}
-        for idx, col in enumerate(object_columns):
+        for idx, col in enumerate(object_columns [:-1]):
             values = X_object[:, :, idx].flatten()
             object_norm_params[col] = {'mean': float(np.mean(values)), 'std': float(np.std(values))}
         

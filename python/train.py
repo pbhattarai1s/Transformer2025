@@ -13,6 +13,18 @@ from load_config import load_config
 from datetime import datetime 
 from comet_ml import Experiment
 import argparse
+import shutil
+
+"""
+This is where all the magic happens!
+
+We get a config file, parse it, get dataloaders (aka tensors for training)
+
+get the event classifier model, and train 
+
+save model after every epoch, plot losses locally and also log in comet!
+
+"""
 
 # let' set comet 
 def set_comet(config):
@@ -57,7 +69,7 @@ def get_dataloaders(config):
     val_dataset = InclusiveDataset(config_dataset['val'], config_dataset['norm'], event_input_features, object_input_features, class_label)
     
     train_dataloader = DataLoader(train_dataset, batch_size=config_training_params['batch_size'], shuffle=config_training_params['shuffle'], num_workers=config_training_params['num_workers'])
-    val_dataloader = DataLoader(val_dataset, batch_size=config_training_params['batch_size'], shuffle=False, num_workers=config_training_params['num_workers'])
+    val_dataloader = DataLoader(val_dataset, batch_size=config_training_params['batch_size'], shuffle=False, num_workers=config_training_params['num_workers']) #disable shuffle for reproducibility
     
     return train_dataloader, val_dataloader
 
@@ -77,14 +89,25 @@ def get_model_paramaters(config):
         'batch_first': True
     }
 
-## main function to run the training 
+def save_checkpoint( model, optimizer, epoch, loss, path):
+    state = {
+        'epoch': epoch, 
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss
+    }
+    torch.save(state,path)
 
+## main function to run the training 
 def main(config_path):
     config = load_config(config_path)
 
     # let's set comet here 
     experiment, model_name = set_comet(config)
-    
+
+    # let's create some output paths and folders to save stuff 
+    os.makedirs(os.path.join("logs",model_name, "ckpt"))
+    shutil.copy(config_path, os.path.join("logs",model_name, "config.yaml"))
     # set random seeds
     setrandom_seeds(config['training']['seed'])
     
@@ -98,12 +121,13 @@ def main(config_path):
     model = EventClassifier(**model_params)
     
     # define the loss function and optimizer
-    criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([config['model']['pos_label_weight']]))
     optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'], weight_decay=float(config['training']['weight_decay']))
     
     # do i plot locally?
     make_plots_locally = config['plots']['make_local_plots']
     path_to_save = config['plots']['plot_path']
+    os.makedirs(os.path.join(path_to_save, model_name))
 
     if make_plots_locally:
         plt.ion()  # enable interactive mode for live plotting
@@ -130,9 +154,12 @@ def main(config_path):
         model.train()
         train_loss = 0
         
-        for batch_idx, (event_feats, object_feats, labels) in enumerate(train_dataloader):
+        for batch_idx, (event_feats, object_feats, labels,valid_mask) in enumerate(train_dataloader):
             optimizer.zero_grad()
-            outputs = model(event_feats, object_feats)
+            # event_feats = torch.randn_like(event_feats)
+            #object_feats = torch.randn_like(object_feats)
+            #labels = torch.randint(0, 2, labels.shape, dtype=labels.dtype)
+            outputs = model(event_feats, object_feats, valid_mask)
             loss = criterion(outputs.squeeze(), labels.float())
             loss.backward()
             optimizer.step()
@@ -143,8 +170,15 @@ def main(config_path):
             experiment.log_metric("train_batch_loss", loss.item(), step=epoch * len(train_dataloader) + batch_idx)
 
             #stop after first 3 batches for testing 
-            if batch_idx >= 20:
-                break
+            # if batch_idx >= 20:
+            #     break
+
+            #if epoch == 0 and batch_idx == 0:
+            #print("epoch: ", epoch, "batch indx: ",batch_idx , f"Batch event_feats mean/std: {event_feats.mean():.3f}/{event_feats.std():.3f}")
+            #print(f"Batch object_feats mean/std: {object_feats.mean():.3f}/{object_feats.std():.3f}")
+            # print(f"Outputs logits mean/std: {outputs.mean():.3f}/{outputs.std():.3f}")
+            # print(f"Outputs logits mean/std labels == 1: {outputs[labels==1].mean():.3f}/{outputs[labels==1].std():.3f}")
+            # print(f"Outputs logits mean/std labels == 0: {outputs[labels==0].mean():.3f}/{outputs[labels==0].std():.3f}")
         
         avg_loss = train_loss / len(train_dataloader)
         train_epoch_losses.append(avg_loss)
@@ -158,8 +192,8 @@ def main(config_path):
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for batch_idx, (event_feats, object_feats, labels) in enumerate(val_dataloader):
-                outputs = model(event_feats, object_feats)
+            for batch_idx, (event_feats, object_feats, labels, valid_mask) in enumerate(val_dataloader):
+                outputs = model(event_feats, object_feats, valid_mask)
                 loss = criterion(outputs.squeeze(), labels.float())
                 val_loss += loss.item()
 
@@ -167,8 +201,8 @@ def main(config_path):
 
                 experiment.log_metric("val_batch_loss", loss.item(), step=epoch * len(val_dataloader) + batch_idx)
                 #stop after first 3 batches for testing 
-                if batch_idx >= 20:
-                    break
+                # if batch_idx >= 20:
+                #     break
         
             val_step_line.set_data(np.arange(len(val_step_losses)), val_step_losses)
        
@@ -176,6 +210,12 @@ def main(config_path):
         val_epoch_losses.append(avg_val_loss)
         print(f"Epoch {epoch+1}, Validation Loss: {avg_val_loss:.4f}")
         experiment.log_metric("val_epoch_loss", avg_val_loss, step=epoch)
+
+         # save after each epoch
+        checkpoint_path = os.path.join("logs", model_name, "ckpt", f"epoch_{epoch+1:02d}_val_loss_{avg_val_loss:.5f}.pth")
+        print (checkpoint_path)
+        save_checkpoint(model, optimizer, epoch, avg_val_loss, checkpoint_path)
+        
 
     if make_plots_locally:
         mplcursors.cursor([train_step_line,val_step_line], hover=True)
@@ -197,12 +237,9 @@ def main(config_path):
         plt.pause(0.1)
 
         plt.ioff()  # disable interactive mode
-        plt.savefig(path_to_save+"/Train_Validation_Loss_"+model_name+".png")
+        plt.savefig(path_to_save+model_name+"/Train_Validation_Loss.png")
         plt.show()  # show the final plot
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True, help='Path to config file')
-    args = parser.parse_args()
-
+    args = parse_args()
     main(args.config)

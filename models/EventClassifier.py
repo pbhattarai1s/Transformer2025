@@ -17,12 +17,12 @@ class EventClassifier(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1), #should update this to match the output dimension of your classifier
-            nn.Sigmoid()
+            #nn.Sigmoid()
         )
 
-    def forward(self, event_features, object_features):
+    def forward(self, event_features, object_features,valid_mask):
         event_representation = self.event_net(event_features)
-        object_representation = self.object_net(object_features)
+        object_representation = self.object_net(object_features,src_key_padding_mask=~valid_mask)
         combined_representation = torch.cat((event_representation, object_representation), dim=-1)
         output = self.classifier(combined_representation)
 

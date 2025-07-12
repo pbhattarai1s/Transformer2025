@@ -3,6 +3,9 @@ from torch.utils.data import Dataset
 import h5py
 import numpy as np
 import yaml
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 class InclusiveDataset(Dataset):
     #class initualization
@@ -11,11 +14,13 @@ class InclusiveDataset(Dataset):
         all_events = self.h5_file['events'][:]
         all_objects = self.h5_file['objects'][:]
 
+        self.valid_mask = all_objects['valid']
+
         # Select only specified columns
         self.events = all_events[event_input_features] if event_input_features else all_events
         self.objects = all_objects[object_input_features] if object_input_features else all_objects
         self.labels = all_events[class_label]
-      
+
         if norm_file is None:
             raise ValueError("Normalization file path must be provided.")
         
@@ -48,6 +53,8 @@ class InclusiveDataset(Dataset):
         event_tensor = torch.tensor(event_features, dtype=torch.float32)
         object_tensor = torch.tensor(object_data, dtype=torch.float32) 
         label_tensor = torch.tensor(self.labels[idx], dtype=torch.int64)
+        #valid_mask = np.array([self.valid[idx, obj_idx] for obj_idx in range(self.objects.shape[1])], dtype=bool)
+        valid_mask_tensor = torch.tensor(self.valid_mask[idx], dtype=torch.bool)
 
-        return event_tensor, object_tensor, label_tensor
+        return event_tensor, object_tensor, label_tensor, valid_mask_tensor
     

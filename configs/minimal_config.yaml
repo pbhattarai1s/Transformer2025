@@ -7,10 +7,10 @@ dataset:
     norm: "training_input_files/norm.yaml"
 
 training:
-    batch_size: 32
+    batch_size: 256
     num_workers: 0
-    num_epochs: 30
-    learning_rate: 0.001
+    num_epochs: 20
+    learning_rate: 0.01
     weight_decay: 1e-5
     dropout: 0.1
     seed: 42
@@ -20,9 +20,7 @@ training:
 model:
     inputs:
         event_features: 
-            - mBB
             - pTBB
-            - eventWeight
             - nJets20pt_central
             - nJets20pt_rap
             - dPhiBB
@@ -33,17 +31,13 @@ model:
             - dEtaBBJJ
             - pT_balance
             - centralMaxPt
-            - mBB_angle
             - asymJJ
         object_features: 
             - VBFjetPt
             - VBFjetEta
             - GN2v01BinBJet
             - GN2v01BinVBfJet
-            - GN2v01cBinBJet
-            - GN2v01cBinVBfJet
             - NTrk500PVVBFJet
-            - QGTransformer_ConstScoreVBFJet
     hidden_dim: 64 #embedding dimension
     output_dim: 64 #dimension before the final classification layer
     num_heads: 4
@@ -51,7 +45,7 @@ model:
     ff_dim: 128
     object_pooling: "GlobalAttentionPooling"
     class_label: label
-
+    pos_label_weight: 3.4
 plots:
     make_local_plots: True
     plot_path: "plots/"

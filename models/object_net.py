@@ -28,7 +28,7 @@ class ObjectEvent(nn.Module):
         self.pooltype = pooltype  # type of pooling to use, can be 'GlobalAttentionPooling' or 'MeanPooling'
 
 
-    def forward(self, x):
+    def forward(self, x, src_key_padding_mask=None):
         """
         Forward pass through the network
         :param x: Input tensor of shape (batch_size, num_objects, input_dim)
@@ -38,11 +38,17 @@ class ObjectEvent(nn.Module):
         x = self.input_projection(x)
         positions = torch.arange(x.size(1), device=x.device).unsqueeze(0).expand(x.size(0),-1) #adding batch dimension for positional encoding
         x = x + self.positional_embedding(positions)  # add positional encoding to the embbedded object features
-        x = self.transformer_encoder(x)
+        # the second argument in transformer encoder is to remove not valid objects
+        x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
         ##### Object Pooling  i.e. aggregating across all objects #####
         if self.pooltype == 'GlobalAttentionPooling':
             # Global attention pooling
             scores = self.attn_mlp(x)  # (batch, n_objects, 1)
+            if src_key_padding_mask is not None:
+                # src_key_padding_mask: (batch, n_objects), True = pad
+                mask_expanded = src_key_padding_mask.unsqueeze(-1)  # (batch, n_objects, 1)
+                scores = scores.masked_fill(mask_expanded, float('-inf'))
+            
             weights = torch.softmax(scores, dim=1)  # (batch, n_objects, 1)
             x = (weights * x).sum(dim=1)  # (batch, model_dim)
         
