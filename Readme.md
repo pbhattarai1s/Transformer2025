@@ -32,6 +32,19 @@ There are currently two environment used. <span style="color:red"> To do: add en
     
 ```
 
+## How to Run
+
+- Training 
+```bash
+python train.py --config configs/minimal_config.yaml
+```
+- Evaluation 
+```bash
+ython evaluate.py --model_name <log_dir> --test_file test.h5
+```
+Can also pass an optional ckpt incase to test a particular ckpt.
+
+
 ## Features
 - Processes **event-level features** through an MLP.
 - Processes **object-level features** (events, objects, etc) through a Transformer Encoder.
