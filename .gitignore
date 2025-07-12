@@ -1,3 +1,5 @@
 *.png
 __pycache__/
 *.h5
+logs/*
+vision_board.md
