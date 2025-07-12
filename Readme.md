@@ -49,11 +49,11 @@ There are currently two environment used. <span style="color:red"> To do: add en
 - models 
     where all the models will be stored. currently has event, object and overall classifier 
 - python 
-    ├── data_loader.py # InclusiveDataset handles reading & normalization
-    ├── train.py # trains model, logs to comet, saves ckpts & plots,
-    ├── evaluate.py # loads model, predicts on test set, updates H5
-    ├── root_to_h5.py # convert root to h5 files with "events", "objects" structure; event has a scalar dattype and object is a vector 
-    ├── load_config.py # parses yaml
+    - data_loader.py # InclusiveDataset handles reading & normalization
+    - train.py # trains model, logs to comet, saves ckpts & plots,
+    - evaluate.py # loads model, predicts on test set, updates H5
+    - root_to_h5.py # convert root to h5 files with "events", "objects" structure; event has a scalar dattype and object is a vector 
+    - load_config.py # parses yaml
 
 ## To DO and Planned Extensions 
 
