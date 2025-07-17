@@ -15,6 +15,7 @@ class InclusiveDataset(Dataset):
         all_objects = self.h5_file['objects'][:]
 
         self.valid_mask = all_objects['valid']
+        self.mbb = all_events['mBB']
 
         # Select only specified columns
         self.events = all_events[event_input_features] if event_input_features else all_events
@@ -55,6 +56,7 @@ class InclusiveDataset(Dataset):
         label_tensor = torch.tensor(self.labels[idx], dtype=torch.int64)
         #valid_mask = np.array([self.valid[idx, obj_idx] for obj_idx in range(self.objects.shape[1])], dtype=bool)
         valid_mask_tensor = torch.tensor(self.valid_mask[idx], dtype=torch.bool)
+        mbb_tensor = torch.tensor(self.mbb[idx], dtype=torch.float32)
 
-        return event_tensor, object_tensor, label_tensor, valid_mask_tensor
+        return event_tensor, object_tensor, label_tensor, valid_mask_tensor, mbb_tensor
     

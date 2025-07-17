@@ -22,6 +22,7 @@ event_features_to_extract = [
     "centralMaxPt",
     "mBB_angle",
     "asymJJ",
+    "nn_Sideband_Data_newgrlbv_v1_lambda100"
 ]
 object_features_to_extract = [
     ["pTJ1", "pTJ2"],

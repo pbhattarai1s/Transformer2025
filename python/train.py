@@ -8,12 +8,14 @@ import random
 import numpy as np
 from models.EventClassifier import EventClassifier
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import mplcursors
 from load_config import load_config
 from datetime import datetime 
 from comet_ml import Experiment
 import argparse
 import shutil
+from train_single_epoch import run_epoch
 
 """
 This is where all the magic happens!
@@ -77,7 +79,7 @@ def get_model_paramaters(config):
     model_params = config['model']
     event_input_dim = len(model_params['inputs']['event_features'])
     object_input_dim = len(model_params['inputs']['object_features'])
-    
+
     return {
         'event_input_dim': event_input_dim,
         'object_input_dim': object_input_dim,
@@ -86,7 +88,10 @@ def get_model_paramaters(config):
         'num_heads': model_params['num_heads'],
         'num_encoder_layers': model_params['num_encoder_layers'],
         'ff_dim': model_params['ff_dim'],
-        'batch_first': True
+        'batch_first': True,
+        'adv_lambda':  model_params['adv_lambda'],
+        'adv_method': model_params['decorrelation_strategy'], 
+        'mbb_bins': model_params['mbb_bins']
     }
 
 def save_checkpoint( model, optimizer, epoch, loss, path):
@@ -122,6 +127,7 @@ def main(config_path):
     
     # define the loss function and optimizer
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([config['model']['pos_label_weight']]))
+    criterion_adv = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'], weight_decay=float(config['training']['weight_decay']))
     
     # do i plot locally?
@@ -132,108 +138,151 @@ def main(config_path):
     if make_plots_locally:
         plt.ion()  # enable interactive mode for live plotting
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+
+         #Create custom legend handles
+        legend_lines = [
+            Line2D([0], [0], color="black", linestyle='--', label="classifier loss"),
+            Line2D([0], [0], color="black", linestyle='-.', label="adversary loss"),
+            Line2D([0], [0], color="black", linestyle='-', label="total loss")
+        ]
+
+        # Add a global legend to the whole figure
+        fig.legend(handles=legend_lines, loc='upper center', ncol=3, frameon=False)
     
-        train_step_line, = ax1.plot([], [], label="Train loss", color="blue")
-        val_step_line, = ax1.plot([], [], label="Val loss", color="orange")
+        train_step_line_class, = ax1.plot([], [], label="Train loss", color="blue",linestyle='--' )
+        val_step_line_class, = ax1.plot([], [], label="Val loss", color="orange", linestyle='--')
+        train_step_line_advers, = ax1.plot([], [], color="blue", linestyle='-.')
+        val_step_line_advers, = ax1.plot([], [], color="orange", linestyle='-.')
+        train_step_line_tot, = ax1.plot([], [], color="blue")
+        val_step_line_tot, = ax1.plot([], [], color="orange")
         ax1.legend(loc='upper right')
         ax1.grid(True)
         ax2.grid(True)
 
-        train_epoch_line, = ax2.plot([], [], label="Train epoch loss", color="blue")
-        val_epoch_line, = ax2.plot([], [], label="Val epoch loss", color="orange")
+        train_epoch_line_class, = ax2.plot([], [], label="Train loss", color="blue",linestyle='--' )
+        val_epoch_line_class, = ax2.plot([], [], label="Val loss", color="orange", linestyle='--')
+        train_epoch_line_advers, = ax2.plot([], [], color="blue", linestyle='-.')
+        val_epoch_line_advers, = ax2.plot([], [], color="orange", linestyle='-.')
+        train_epoch_line_tot, = ax2.plot([], [], color="blue")
+        val_epoch_line_tot, = ax2.plot([], [], color="orange")
 
     # start the training loop now 
     num_epochs = config['training']['num_epochs']
     print("Starting Training Loop...")
-    train_epoch_losses = []
-    val_epoch_losses = []
-    val_step_losses = []
-    train_step_losses = []
-    
+    # save losses for plotting
+    train_epoch_losses_classifier, val_epoch_losses_classifier,val_step_losses_classifier, train_step_losses_classifier = [], [] ,[] ,[]
+
+    train_epoch_losses_advers, val_epoch_losses_advers, val_step_losses_advers, train_step_losses_advers = [], [] ,[] ,[]
+
+    train_epoch_losses_tot, val_epoch_losses_tot,val_step_losses_tot, train_step_losses_tot = [], [] ,[] ,[]
+
+
     for epoch in range(num_epochs):
         model.train()
-        train_loss = 0
-        
-        for batch_idx, (event_feats, object_feats, labels,valid_mask) in enumerate(train_dataloader):
-            optimizer.zero_grad()
-            # event_feats = torch.randn_like(event_feats)
-            #object_feats = torch.randn_like(object_feats)
-            #labels = torch.randint(0, 2, labels.shape, dtype=labels.dtype)
-            outputs = model(event_feats, object_feats, valid_mask)
-            loss = criterion(outputs.squeeze(), labels.float())
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
+        torch.set_grad_enabled(True)
 
-            train_step_losses.append(loss.item())
+        # === TRAINING ===
+        avg_train_clf, avg_train_adv, avg_train_tot, clf_steps, adv_steps, tot_steps = run_epoch(
+            model=model,
+            dataloader=train_dataloader,
+            model_params=model_params,
+            criterion=criterion,
+            criterion_adv=criterion_adv,
+            experiment=experiment,
+            epoch=epoch,
+            is_train=True,
+            optimizer=optimizer,
+            #max_batches=3  # optional: remove for full training
+        )
 
-            experiment.log_metric("train_batch_loss", loss.item(), step=epoch * len(train_dataloader) + batch_idx)
+        train_epoch_losses_classifier.append(avg_train_clf)
+        train_epoch_losses_advers.append(avg_train_adv)
+        train_epoch_losses_tot.append(avg_train_tot)
 
-            #stop after first 3 batches for testing 
-            # if batch_idx >= 20:
-            #     break
+        print(f"[Epoch {epoch+1}] Train Losses — Classifier: {avg_train_clf:.4f}, Adversary: {avg_train_adv:.4f}, Total: {avg_train_tot:.4f}")
+        experiment.log_metric("train_epoch_classifier_loss", avg_train_clf, step=epoch)
+        experiment.log_metric("train_epoch_adverserial_loss", avg_train_adv, step=epoch)
+        experiment.log_metric("train_epoch_total_loss", avg_train_tot, step=epoch)
 
-            #if epoch == 0 and batch_idx == 0:
-            #print("epoch: ", epoch, "batch indx: ",batch_idx , f"Batch event_feats mean/std: {event_feats.mean():.3f}/{event_feats.std():.3f}")
-            #print(f"Batch object_feats mean/std: {object_feats.mean():.3f}/{object_feats.std():.3f}")
-            # print(f"Outputs logits mean/std: {outputs.mean():.3f}/{outputs.std():.3f}")
-            # print(f"Outputs logits mean/std labels == 1: {outputs[labels==1].mean():.3f}/{outputs[labels==1].std():.3f}")
-            # print(f"Outputs logits mean/std labels == 0: {outputs[labels==0].mean():.3f}/{outputs[labels==0].std():.3f}")
-        
-        avg_loss = train_loss / len(train_dataloader)
-        train_epoch_losses.append(avg_loss)
-        print(f"Epoch {epoch+1}, Train Loss: {avg_loss:.4f}")
-        experiment.log_metric("train_epoch_loss", avg_loss, step=epoch)
+        train_step_losses_classifier.extend(clf_steps)
+        train_step_losses_advers.extend(adv_steps)
+        train_step_losses_tot.extend(tot_steps)
 
+        # Optional: update plot lines if you're plotting interactively
         if make_plots_locally:
-            train_step_line.set_data(np.arange(len(train_step_losses)), train_step_losses)
-        
-        # validation loop
+            train_step_line_class.set_data(np.arange(len(train_step_losses_classifier)), train_step_losses_classifier)
+            train_step_line_advers.set_data(np.arange(len(train_step_losses_advers)), train_step_losses_advers)
+            train_step_line_tot.set_data(np.arange(len(train_step_losses_tot)), train_step_losses_tot)
+
+        # === VALIDATION ===
         model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for batch_idx, (event_feats, object_feats, labels, valid_mask) in enumerate(val_dataloader):
-                outputs = model(event_feats, object_feats, valid_mask)
-                loss = criterion(outputs.squeeze(), labels.float())
-                val_loss += loss.item()
+        torch.set_grad_enabled(False)
 
-                val_step_losses.append(loss.item())
+        avg_val_clf, avg_val_adv, avg_val_tot, val_clf_steps, val_adv_steps, val_tot_steps = run_epoch(
+            model=model,
+            dataloader=val_dataloader,
+            model_params=model_params,
+            criterion=criterion,
+            criterion_adv=criterion_adv,
+            experiment=experiment,
+            epoch=epoch,
+            is_train=False,
+            #max_batches=3
+        )
 
-                experiment.log_metric("val_batch_loss", loss.item(), step=epoch * len(val_dataloader) + batch_idx)
-                #stop after first 3 batches for testing 
-                # if batch_idx >= 20:
-                #     break
-        
-            val_step_line.set_data(np.arange(len(val_step_losses)), val_step_losses)
-       
-        avg_val_loss = val_loss / len(val_dataloader)
-        val_epoch_losses.append(avg_val_loss)
-        print(f"Epoch {epoch+1}, Validation Loss: {avg_val_loss:.4f}")
-        experiment.log_metric("val_epoch_loss", avg_val_loss, step=epoch)
+        val_epoch_losses_classifier.append(avg_val_clf)
+        val_epoch_losses_advers.append(avg_val_adv)
+        val_epoch_losses_tot.append(avg_val_tot)
 
-         # save after each epoch
-        checkpoint_path = os.path.join("logs", model_name, "ckpt", f"epoch_{epoch+1:02d}_val_loss_{avg_val_loss:.5f}.pth")
-        print (checkpoint_path)
-        save_checkpoint(model, optimizer, epoch, avg_val_loss, checkpoint_path)
-        
+        print(f"[Epoch {epoch+1}] val Losses — Classifier: {avg_val_clf:.4f}, Adversary: {avg_val_adv:.4f}, Total: {avg_val_tot:.4f}")
+        experiment.log_metric("val_epoch_classifier_loss", avg_val_clf, step=epoch)
+        experiment.log_metric("val_epoch_adverserial_loss", avg_val_adv, step=epoch)
+        experiment.log_metric("val_epoch_total_loss", avg_val_tot, step=epoch)
+
+        val_step_losses_classifier.extend(val_clf_steps)
+        val_step_losses_advers.extend(val_adv_steps)
+        val_step_losses_tot.extend(val_tot_steps)
+
+        # Optional: update plot lines if you're plotting interactively
+        if make_plots_locally:
+            val_step_line_class.set_data(np.arange(len(val_step_losses_classifier)), val_step_losses_classifier)
+            val_step_line_advers.set_data(np.arange(len(val_step_losses_advers)), val_step_losses_advers)
+            val_step_line_tot.set_data(np.arange(len(val_step_losses_tot)), val_step_losses_tot)
+
+
+        # Save checkpoint
+        checkpoint_path = os.path.join("logs", model_name, "ckpt", f"epoch_{epoch+1:02d}_val_loss_{avg_val_tot:.6f}.pth")
+        save_checkpoint(model, optimizer, epoch, avg_val_tot, checkpoint_path)
 
     if make_plots_locally:
-        mplcursors.cursor([train_step_line,val_step_line], hover=True)
+        mplcursors.cursor([train_step_line_class,val_step_line_class], hover=True)
+        mplcursors.cursor([train_step_line_advers,val_step_line_advers], hover=True)
+        mplcursors.cursor([train_step_line_tot,val_step_line_tot], hover=True)
         ax1.set_title("Training & Validation Loss Monitoring")
         ax1.set_xlabel("Batch step")
         ax1.set_ylabel("Loss")
         ax1.relim()
         ax1.autoscale_view()
+        ax1.set_yscale('log')
         plt.pause(0.01)
 
         # update epoch plot
-        train_epoch_line.set_data(np.arange(len(train_epoch_losses)), train_epoch_losses)
-        val_epoch_line.set_data(np.arange(len(val_epoch_losses)), val_epoch_losses)
-        mplcursors.cursor([train_epoch_line,val_epoch_line], hover=True)
+        train_epoch_line_class.set_data(np.arange(len(train_epoch_losses_classifier)),train_epoch_losses_classifier)
+        val_epoch_line_class.set_data(np.arange(len(val_epoch_losses_classifier)),val_epoch_losses_classifier)
+        train_epoch_line_advers.set_data(np.arange(len(train_epoch_losses_advers)),train_epoch_losses_advers)
+        val_epoch_line_advers.set_data(np.arange(len(val_epoch_losses_advers)),val_epoch_losses_advers)
+        train_epoch_line_tot.set_data(np.arange(len(train_epoch_losses_tot)),train_epoch_losses_tot)
+        val_epoch_line_tot.set_data(np.arange(len(val_epoch_losses_tot)),val_epoch_losses_tot)
+
+       
+        mplcursors.cursor([train_epoch_line_class,val_epoch_line_class], hover=True)
+        mplcursors.cursor([train_epoch_line_advers,val_epoch_line_advers], hover=True)
+        mplcursors.cursor([train_epoch_line_tot,val_epoch_line_tot], hover=True)
         ax2.set_xlabel("Epoch")
         ax2.set_ylabel("Loss")
         ax2.relim()
         ax2.autoscale_view()
+        ax2.set_yscale('log')
         plt.pause(0.1)
 
         plt.ioff()  # disable interactive mode
